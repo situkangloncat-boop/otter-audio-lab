@@ -5,6 +5,10 @@ import android.media.MediaMetadataRetriever
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.text.Editable
+import android.text.TextWatcher
 import android.view.View
 import android.widget.*
 import androidx.activity.result.contract.ActivityResultContracts
@@ -15,16 +19,26 @@ import com.arthenica.ffmpegkit.ReturnCode
 import java.io.File
 import java.io.FileOutputStream
 import java.util.Locale
+import kotlin.concurrent.thread
 import kotlin.math.pow
 import kotlin.math.roundToInt
 
 /**
- * OTTER AUDIO LAB
+ * OTTER AUDIO EXPRESS
  * ================================================================
  * Aplikasi pengubah bagian-bagian lagu secara otomatis: Tempo, Pitch,
  * Volume, Bass, Mid, Treble, Reverb, Echo/Delay, Panning, Kompresi,
  * Distorsi, Fade In/Out, Loop, Trim, dan mode Vokal/Instrumen
  * (best-effort, bukan AI source separation).
+ *
+ * Fitur di versi ini:
+ *  - Setiap slider punya kotak input angka di sampingnya (dua arah:
+ *    geser slider -> angka ikut berubah, ketik angka -> slider ikut geser).
+ *  - Tombol Stop untuk menghentikan pemutaran hasil kapan saja.
+ *  - Nama file hasil edit bisa ditentukan sendiri sebelum diproses.
+ *  - Panel Trim menampilkan gelombang (waveform) lagu asli, bisa diputar,
+ *    dan bagian yang mau dipotong ditentukan langsung dengan menggeser
+ *    gagang kuning di atas gelombangnya (atau ketik detiknya manual).
  *
  * Mesin pemroses: FFmpeg (lewat FFmpegKit, fork community karena versi
  * resmi arthenica sudah pensiun). Semua efek dibangun jadi satu filter
@@ -65,6 +79,9 @@ class MainActivity : AppCompatActivity() {
 
     private val effectValues = mutableMapOf<String, Float>()
     private val valueLabels = mutableMapOf<String, TextView>()
+    private val effectSeekBars = mutableMapOf<String, SeekBar>()
+    private val effectInputs = mutableMapOf<String, EditText>()
+    private var suppressEffectSync = false
 
     private lateinit var effectsContainer: LinearLayout
     private lateinit var txtFileName: TextView
@@ -73,14 +90,27 @@ class MainActivity : AppCompatActivity() {
     private lateinit var spinnerVocal: Spinner
     private lateinit var editTrimStart: EditText
     private lateinit var editTrimEnd: EditText
+    private lateinit var editOutputName: EditText
+    private lateinit var trimWaveformView: TrimWaveformView
+    private lateinit var txtTrimPosition: TextView
+    private lateinit var txtTrimDuration: TextView
     private lateinit var btnProcess: Button
     private lateinit var btnPlay: Button
+    private lateinit var btnStop: Button
     private lateinit var btnSave: Button
+    private lateinit var btnTrimPlay: Button
+    private lateinit var btnTrimStop: Button
+    private var suppressTrimSync = false
 
     private var inputFile: File? = null
     private var outputFile: File? = null
     private var inputDurationSec: Double = 0.0
     private var mediaPlayer: MediaPlayer? = null
+
+    // Player khusus untuk mendengarkan lagu ASLI di panel Trim
+    private var previewPlayer: MediaPlayer? = null
+    private val previewHandler = Handler(Looper.getMainLooper())
+    private var previewWatcher: Runnable? = null
 
     private val pickAudioLauncher =
         registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
@@ -98,11 +128,19 @@ class MainActivity : AppCompatActivity() {
         spinnerVocal = findViewById(R.id.spinnerVocal)
         editTrimStart = findViewById(R.id.editTrimStart)
         editTrimEnd = findViewById(R.id.editTrimEnd)
+        editOutputName = findViewById(R.id.editOutputName)
+        trimWaveformView = findViewById(R.id.trimWaveformView)
+        txtTrimPosition = findViewById(R.id.txtTrimPosition)
+        txtTrimDuration = findViewById(R.id.txtTrimDuration)
         btnProcess = findViewById(R.id.btnProcess)
         btnPlay = findViewById(R.id.btnPlay)
+        btnStop = findViewById(R.id.btnStop)
         btnSave = findViewById(R.id.btnSave)
+        btnTrimPlay = findViewById(R.id.btnTrimPlay)
+        btnTrimStop = findViewById(R.id.btnTrimStop)
 
         buildEffectSliders()
+        setupTrimPanel()
 
         spinnerVocal.adapter = ArrayAdapter(
             this,
@@ -118,15 +156,19 @@ class MainActivity : AppCompatActivity() {
 
         btnProcess.setOnClickListener { processAudio() }
         btnPlay.setOnClickListener { playOutput() }
+        btnStop.setOnClickListener { stopOutputPlayback() }
         btnSave.setOnClickListener { shareOutput() }
 
         btnProcess.isEnabled = false
         btnPlay.isEnabled = false
+        btnStop.isEnabled = false
         btnSave.isEnabled = false
+        btnTrimPlay.isEnabled = false
+        btnTrimStop.isEnabled = false
     }
 
     // ------------------------------------------------------------
-    // UI: bangun 1 baris (label + nilai + SeekBar) per efek
+    // UI: bangun 1 baris (label + nilai + kotak angka + SeekBar) per efek
     // ------------------------------------------------------------
     private fun buildEffectSliders() {
         val steps = 1000
@@ -138,7 +180,10 @@ class MainActivity : AppCompatActivity() {
                 setPadding(0, 20, 0, 0)
             }
 
-            val labelRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            val labelRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = android.view.Gravity.CENTER_VERTICAL
+            }
             val labelView = TextView(this).apply {
                 text = effect.label
                 setTextColor(0xFFFFFFFF.toInt())
@@ -147,29 +192,73 @@ class MainActivity : AppCompatActivity() {
             val valueView = TextView(this).apply {
                 text = formatValue(effect, effect.default)
                 setTextColor(0xFF66BB6A.toInt())
+                setPadding(8, 0, 8, 0)
             }
             valueLabels[effect.key] = valueView
+
+            // Kotak input angka manual di samping label
+            val numberInput = EditText(this).apply {
+                inputType = android.text.InputType.TYPE_CLASS_NUMBER or
+                        android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL or
+                        android.text.InputType.TYPE_NUMBER_FLAG_SIGNED
+                setText(formatRawNumber(effect.default))
+                setTextColor(0xFFFFFFFF.toInt())
+                layoutParams = LinearLayout.LayoutParams(160, LinearLayout.LayoutParams.WRAP_CONTENT)
+                gravity = android.view.Gravity.END
+            }
+            effectInputs[effect.key] = numberInput
+
             labelRow.addView(labelView)
             labelRow.addView(valueView)
+            labelRow.addView(numberInput)
 
             val seekBar = SeekBar(this).apply {
                 max = steps
                 progress = valueToProgress(effect, effect.default, steps)
             }
+            effectSeekBars[effect.key] = seekBar
+
             seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
+                    if (!fromUser || suppressEffectSync) return
                     val value = progressToValue(effect, progress, steps)
-                    effectValues[effect.key] = value
-                    valueLabels[effect.key]?.text = formatValue(effect, value)
+                    applyEffectValue(effect, value, updateSeekBar = false, updateInput = true)
                 }
                 override fun onStartTrackingTouch(sb: SeekBar?) {}
                 override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+
+            numberInput.addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                override fun afterTextChanged(s: Editable?) {
+                    if (suppressEffectSync) return
+                    val typed = s?.toString()?.toFloatOrNull() ?: return
+                    val clamped = typed.coerceIn(effect.min, effect.max)
+                    applyEffectValue(effect, clamped, updateSeekBar = true, updateInput = false)
+                }
             })
 
             row.addView(labelRow)
             row.addView(seekBar)
             effectsContainer.addView(row)
         }
+    }
+
+    /** Satu titik pusat untuk mengubah nilai efek supaya slider & kotak angka selalu sinkron. */
+    private fun applyEffectValue(effect: EffectParam, value: Float, updateSeekBar: Boolean, updateInput: Boolean) {
+        effectValues[effect.key] = value
+        valueLabels[effect.key]?.text = formatValue(effect, value)
+
+        suppressEffectSync = true
+        if (updateSeekBar) {
+            effectSeekBars[effect.key]?.progress = valueToProgress(effect, value, effectSeekBars[effect.key]?.max ?: 1000)
+        }
+        if (updateInput) {
+            effectInputs[effect.key]?.setText(formatRawNumber(value))
+            effectInputs[effect.key]?.setSelection(effectInputs[effect.key]?.text?.length ?: 0)
+        }
+        suppressEffectSync = false
     }
 
     private fun valueToProgress(effect: EffectParam, value: Float, steps: Int): Int {
@@ -183,19 +272,137 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun formatValue(effect: EffectParam, value: Float): String {
-        val v = if (value == value.roundToInt().toFloat()) value.roundToInt().toString()
-                else String.format(Locale.US, "%.1f", value)
+        val v = formatRawNumber(value)
         return "$v${effect.unit}"
+    }
+
+    private fun formatRawNumber(value: Float): String {
+        return if (value == value.roundToInt().toFloat()) value.roundToInt().toString()
+        else String.format(Locale.US, "%.1f", value)
     }
 
     private fun resetAllEffects() {
         effectsContainer.removeAllViews()
         valueLabels.clear()
+        effectSeekBars.clear()
+        effectInputs.clear()
         buildEffectSliders()
         spinnerVocal.setSelection(0)
-        editTrimStart.setText("")
-        editTrimEnd.setText("")
+        editOutputName.setText("hasil_edit")
+        if (trimWaveformView.durationMs > 0L) {
+            setTrimRangeEverywhere(0L, trimWaveformView.durationMs)
+        }
         txtStatus.text = "Semua efek direset ke default."
+    }
+
+    // ------------------------------------------------------------
+    // PANEL TRIM: waveform + preview lagu asli + sinkronisasi kotak angka
+    // ------------------------------------------------------------
+    private fun setupTrimPanel() {
+        trimWaveformView.onTrimChanged = { startMs, endMs ->
+            updateTrimEditTexts(startMs, endMs)
+        }
+        trimWaveformView.onSeekRequested = { posMs ->
+            seekPreviewTo(posMs)
+        }
+
+        editTrimStart.addTextChangedListener(simpleWatcher {
+            if (suppressTrimSync) return@simpleWatcher
+            onTrimTextEdited()
+        })
+        editTrimEnd.addTextChangedListener(simpleWatcher {
+            if (suppressTrimSync) return@simpleWatcher
+            onTrimTextEdited()
+        })
+
+        btnTrimPlay.setOnClickListener { playTrimPreview() }
+        btnTrimStop.setOnClickListener { stopTrimPreview(resetToStart = true) }
+    }
+
+    private fun simpleWatcher(action: () -> Unit) = object : TextWatcher {
+        override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+        override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+        override fun afterTextChanged(s: Editable?) = action()
+    }
+
+    private fun onTrimTextEdited() {
+        val durMs = trimWaveformView.durationMs
+        if (durMs <= 0L) return
+        val startSec = editTrimStart.text.toString().toDoubleOrNull()
+        val endSec = editTrimEnd.text.toString().toDoubleOrNull()
+        val startMs = ((startSec ?: 0.0) * 1000).toLong().coerceIn(0L, durMs)
+        val endMs = ((endSec ?: (durMs / 1000.0)) * 1000).toLong().coerceIn(startMs, durMs)
+        trimWaveformView.setTrimRange(startMs, endMs)
+    }
+
+    private fun updateTrimEditTexts(startMs: Long, endMs: Long) {
+        suppressTrimSync = true
+        editTrimStart.setText(String.format(Locale.US, "%.2f", startMs / 1000.0))
+        editTrimEnd.setText(String.format(Locale.US, "%.2f", endMs / 1000.0))
+        suppressTrimSync = false
+    }
+
+    private fun setTrimRangeEverywhere(startMs: Long, endMs: Long) {
+        trimWaveformView.setTrimRange(startMs, endMs)
+        updateTrimEditTexts(startMs, endMs)
+    }
+
+    private fun playTrimPreview() {
+        val input = inputFile ?: return
+        stopTrimPreview(resetToStart = false)
+        previewPlayer = MediaPlayer().apply {
+            setDataSource(input.absolutePath)
+            setOnCompletionListener { stopTrimPreview(resetToStart = true) }
+            prepare()
+            seekTo(trimWaveformView.trimStartMs.toInt())
+            start()
+        }
+        btnTrimStop.isEnabled = true
+        startPreviewWatcher()
+        txtStatus.text = "Memutar bagian lagu asli yang dipilih..."
+    }
+
+    private fun seekPreviewTo(posMs: Long) {
+        trimWaveformView.setPlayheadMs(posMs)
+        txtTrimPosition.text = String.format(Locale.US, "%.1f detik", posMs / 1000.0)
+        val player = previewPlayer
+        if (player != null) {
+            try { player.seekTo(posMs.toInt()) } catch (_: Exception) {}
+        }
+    }
+
+    private fun startPreviewWatcher() {
+        previewWatcher?.let { previewHandler.removeCallbacks(it) }
+        val watcher = object : Runnable {
+            override fun run() {
+                val player = previewPlayer
+                if (player != null && player.isPlaying) {
+                    val pos = player.currentPosition.toLong()
+                    trimWaveformView.setPlayheadMs(pos)
+                    txtTrimPosition.text = String.format(Locale.US, "%.1f detik", pos / 1000.0)
+                    if (pos >= trimWaveformView.trimEndMs) {
+                        stopTrimPreview(resetToStart = true)
+                        return
+                    }
+                    previewHandler.postDelayed(this, 80)
+                }
+            }
+        }
+        previewWatcher = watcher
+        previewHandler.post(watcher)
+    }
+
+    private fun stopTrimPreview(resetToStart: Boolean) {
+        previewWatcher?.let { previewHandler.removeCallbacks(it) }
+        previewPlayer?.apply {
+            try { if (isPlaying) stop() } catch (_: Exception) {}
+            release()
+        }
+        previewPlayer = null
+        if (resetToStart) {
+            trimWaveformView.setPlayheadMs(trimWaveformView.trimStartMs)
+            txtTrimPosition.text = String.format(Locale.US, "%.1f detik", trimWaveformView.trimStartMs / 1000.0)
+        }
     }
 
     // ------------------------------------------------------------
@@ -204,6 +411,7 @@ class MainActivity : AppCompatActivity() {
     // ------------------------------------------------------------
     private fun copyPickedAudioToCache(uri: Uri) {
         try {
+            stopTrimPreview(resetToStart = false)
             val displayName = queryDisplayName(uri) ?: "input_audio"
             val ext = displayName.substringAfterLast('.', "mp3")
             val dest = File(cacheDir, "otter_input.$ext")
@@ -214,7 +422,10 @@ class MainActivity : AppCompatActivity() {
             outputFile = null
             txtFileName.text = "File: $displayName"
             btnPlay.isEnabled = false
+            btnStop.isEnabled = false
             btnSave.isEnabled = false
+            btnTrimPlay.isEnabled = false
+            btnTrimStop.isEnabled = false
 
             val retriever = MediaMetadataRetriever()
             retriever.setDataSource(dest.absolutePath)
@@ -223,7 +434,20 @@ class MainActivity : AppCompatActivity() {
             retriever.release()
 
             btnProcess.isEnabled = true
-            txtStatus.text = "Siap diproses. Durasi: ${String.format(Locale.US, "%.1f", inputDurationSec)} detik."
+            txtStatus.text = "Menganalisis gelombang lagu..."
+            txtTrimDuration.text = String.format(Locale.US, "%.1f detik", inputDurationSec)
+            editOutputName.setText(displayName.substringBeforeLast('.').ifBlank { "hasil_edit" })
+
+            // Decode waveform di background thread supaya UI tidak macet
+            thread {
+                val result = WaveformExtractor.extract(dest.absolutePath, barCount = 260, knownDurationMs = durMs)
+                runOnUiThread {
+                    trimWaveformView.setWaveform(result.amplitudes, result.durationMs)
+                    setTrimRangeEverywhere(0L, result.durationMs)
+                    btnTrimPlay.isEnabled = true
+                    txtStatus.text = "Siap diproses. Durasi: ${String.format(Locale.US, "%.1f", inputDurationSec)} detik."
+                }
+            }
         } catch (e: Exception) {
             txtStatus.text = "Gagal membaca file: ${e.message}"
         }
@@ -340,6 +564,25 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ------------------------------------------------------------
+    // Nama file hasil edit (custom, ditentukan pengguna sendiri)
+    // ------------------------------------------------------------
+    private fun sanitizeFileName(raw: String): String {
+        val cleaned = raw.trim().replace(Regex("[^A-Za-z0-9 _-]"), "").replace(Regex("\\s+"), "_")
+        return cleaned.ifBlank { "hasil_edit" }
+    }
+
+    private fun buildOutputFile(): File {
+        val baseName = sanitizeFileName(editOutputName.text.toString())
+        var candidate = File(cacheDir, "$baseName.m4a")
+        var counter = 1
+        while (candidate.exists()) {
+            candidate = File(cacheDir, "${baseName}_$counter.m4a")
+            counter++
+        }
+        return candidate
+    }
+
+    // ------------------------------------------------------------
     // PROSES AUDIO LEWAT FFMPEGKIT
     // ------------------------------------------------------------
     private fun processAudio() {
@@ -355,7 +598,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val filterChain = buildFilterChain(vocalMode, effectiveDuration)
-        val out = File(cacheDir, "otter_output_${System.currentTimeMillis()}.m4a")
+        val out = buildOutputFile()
         outputFile = out
 
         val trimArgs = if (trimStart != null && trimEnd != null && trimEnd > trimStart) {
@@ -368,6 +611,7 @@ class MainActivity : AppCompatActivity() {
         txtStatus.text = "Memproses audio..."
         btnProcess.isEnabled = false
         btnPlay.isEnabled = false
+        btnStop.isEnabled = false
         btnSave.isEnabled = false
 
         FFmpegKit.executeAsync(command) { session ->
@@ -375,7 +619,7 @@ class MainActivity : AppCompatActivity() {
                 progressBar.visibility = View.GONE
                 btnProcess.isEnabled = true
                 if (ReturnCode.isSuccess(session.returnCode)) {
-                    txtStatus.text = "Selesai! File siap diputar / disimpan."
+                    txtStatus.text = "Selesai! File \"${out.name}\" siap diputar / disimpan."
                     btnPlay.isEnabled = true
                     btnSave.isEnabled = true
                 } else {
@@ -395,11 +639,27 @@ class MainActivity : AppCompatActivity() {
         mediaPlayer?.release()
         mediaPlayer = MediaPlayer().apply {
             setDataSource(out.absolutePath)
-            setOnCompletionListener { it.release() }
+            setOnCompletionListener {
+                it.release()
+                mediaPlayer = null
+                btnStop.isEnabled = false
+                txtStatus.text = "Selesai diputar."
+            }
             prepare()
             start()
         }
+        btnStop.isEnabled = true
         txtStatus.text = "Memutar hasil..."
+    }
+
+    private fun stopOutputPlayback() {
+        mediaPlayer?.apply {
+            try { if (isPlaying) stop() } catch (_: Exception) {}
+            release()
+        }
+        mediaPlayer = null
+        btnStop.isEnabled = false
+        txtStatus.text = "Pemutaran dihentikan."
     }
 
     private fun shareOutput() {
@@ -410,11 +670,12 @@ class MainActivity : AppCompatActivity() {
             putExtra(Intent.EXTRA_STREAM, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        startActivity(Intent.createChooser(intent, "Simpan / Bagikan hasil audio"))
+        startActivity(Intent.createChooser(intent, "Simpan / Bagikan \"${out.name}\""))
     }
 
     override fun onDestroy() {
         mediaPlayer?.release()
+        stopTrimPreview(resetToStart = false)
         super.onDestroy()
     }
 }
