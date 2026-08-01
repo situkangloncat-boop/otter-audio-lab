@@ -14,6 +14,7 @@ import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.ReturnCode
 import java.io.File
 import java.io.FileOutputStream
+import java.util.Locale
 import kotlin.math.pow
 import kotlin.math.roundToInt
 
@@ -183,7 +184,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun formatValue(effect: EffectParam, value: Float): String {
         val v = if (value == value.roundToInt().toFloat()) value.roundToInt().toString()
-                else String.format("%.1f", value)
+                else String.format(Locale.US, "%.1f", value)
         return "$v${effect.unit}"
     }
 
@@ -222,7 +223,7 @@ class MainActivity : AppCompatActivity() {
             retriever.release()
 
             btnProcess.isEnabled = true
-            txtStatus.text = "Siap diproses. Durasi: ${"%.1f".format(inputDurationSec)} detik."
+            txtStatus.text = "Siap diproses. Durasi: ${String.format(Locale.US, "%.1f", inputDurationSec)} detik."
         } catch (e: Exception) {
             txtStatus.text = "Gagal membaca file: ${e.message}"
         }
@@ -244,7 +245,7 @@ class MainActivity : AppCompatActivity() {
         val filters = mutableListOf<String>()
         while (r > 2.0) { filters.add("atempo=2.0"); r /= 2.0 }
         while (r < 0.5) { filters.add("atempo=0.5"); r /= 0.5 }
-        filters.add("atempo=%.4f".format(r))
+        filters.add("atempo=${String.format(Locale.US, "%.4f", r)}")
         return filters.joinToString(",")
     }
 
@@ -257,7 +258,7 @@ class MainActivity : AppCompatActivity() {
         val pitchSemitone = (v["pitch"] ?: 0f).toDouble()
         val pitchRatio = 2.0.pow(pitchSemitone / 12.0)
         if (pitchSemitone != 0.0) {
-            filters.add("asetrate=44100*${"%.6f".format(pitchRatio)}")
+            filters.add("asetrate=44100*${String.format(Locale.US, "%.6f", pitchRatio)}")
             filters.add("aresample=44100")
             filters.add(buildAtempoChain(tempoRatio / pitchRatio))
         } else if (tempoRatio != 1.0) {
@@ -268,30 +269,30 @@ class MainActivity : AppCompatActivity() {
         val bass = v["bass"] ?: 0f
         val mid = v["mid"] ?: 0f
         val treble = v["treble"] ?: 0f
-        if (bass != 0f) filters.add("bass=g=${"%.1f".format(bass)}")
-        if (mid != 0f) filters.add("equalizer=f=1000:width_type=o:width=1:g=${"%.1f".format(mid)}")
-        if (treble != 0f) filters.add("treble=g=${"%.1f".format(treble)}")
+        if (bass != 0f) filters.add("bass=g=${String.format(Locale.US, "%.1f", bass)}")
+        if (mid != 0f) filters.add("equalizer=f=1000:width_type=o:width=1:g=${String.format(Locale.US, "%.1f", mid)}")
+        if (treble != 0f) filters.add("treble=g=${String.format(Locale.US, "%.1f", treble)}")
 
         // --- Kompresi ---
         val compress = v["compress"] ?: 0f
         if (compress > 0f) {
             val ratio = 1.0 + (compress / 100.0) * 15.0
             val threshold = -5.0 - (compress / 100.0) * 25.0
-            filters.add("acompressor=threshold=${"%.1f".format(threshold)}dB:ratio=${"%.1f".format(ratio)}:attack=20:release=250:makeup=2")
+            filters.add("acompressor=threshold=${String.format(Locale.US, "%.1f", threshold)}dB:ratio=${String.format(Locale.US, "%.1f", ratio)}:attack=20:release=250:makeup=2")
         }
 
         // --- Distorsi / Saturasi ---
         val distortion = v["distortion"] ?: 0f
         if (distortion > 0f) {
             val threshold = (1.0 - (distortion / 100.0) * 0.9).coerceIn(0.05, 1.0)
-            filters.add("asoftclip=type=tanh:threshold=${"%.3f".format(threshold)}")
+            filters.add("asoftclip=type=tanh:threshold=${String.format(Locale.US, "%.3f", threshold)}")
         }
 
         // --- Panning ---
         val pan = v["pan"] ?: 0f
         if (pan != 0f) {
             val p = (pan / 100.0).coerceIn(-1.0, 1.0)
-            filters.add("stereotools=balance_in=${"%.2f".format(p)}")
+            filters.add("stereotools=balance_in=${String.format(Locale.US, "%.2f", p)}")
         }
 
         // --- Vokal / Instrumen (best-effort, bukan AI separation) ---
@@ -304,7 +305,7 @@ class MainActivity : AppCompatActivity() {
         val reverb = v["reverb"] ?: 0f
         if (reverb > 0f) {
             val d1 = (reverb / 100.0 * 0.6).coerceIn(0.05, 0.6)
-            filters.add("aecho=0.8:0.9:60|150|280:${"%.2f".format(d1)}|${"%.2f".format(d1 * 0.7)}|${"%.2f".format(d1 * 0.5)}")
+            filters.add("aecho=0.8:0.9:60|150|280:${String.format(Locale.US, "%.2f", d1)}|${String.format(Locale.US, "%.2f", d1 * 0.7)}|${String.format(Locale.US, "%.2f", d1 * 0.5)}")
         }
 
         // --- Echo / Delay ---
@@ -312,20 +313,20 @@ class MainActivity : AppCompatActivity() {
         if (echo > 0f) {
             val delayMs = (200 + echo * 8).roundToInt()
             val decay = (echo / 100.0 * 0.6).coerceIn(0.05, 0.6)
-            filters.add("aecho=0.8:0.88:$delayMs:${"%.2f".format(decay)}")
+            filters.add("aecho=0.8:0.88:$delayMs:${String.format(Locale.US, "%.2f", decay)}")
         }
 
         // --- Volume ---
         val volume = v["volume"] ?: 0f
-        if (volume != 0f) filters.add("volume=${"%.1f".format(volume)}dB")
+        if (volume != 0f) filters.add("volume=${String.format(Locale.US, "%.1f", volume)}dB")
 
         // --- Fade In / Out ---
         val fadeIn = v["fadeIn"] ?: 0f
         val fadeOut = v["fadeOut"] ?: 0f
-        if (fadeIn > 0f) filters.add("afade=t=in:st=0:d=${"%.2f".format(fadeIn)}")
+        if (fadeIn > 0f) filters.add("afade=t=in:st=0:d=${String.format(Locale.US, "%.2f", fadeIn)}")
         if (fadeOut > 0f) {
             val start = (effectiveDuration - fadeOut).coerceAtLeast(0.0)
-            filters.add("afade=t=out:st=${"%.2f".format(start)}:d=${"%.2f".format(fadeOut)}")
+            filters.add("afade=t=out:st=${String.format(Locale.US, "%.2f", start)}:d=${String.format(Locale.US, "%.2f", fadeOut)}")
         }
 
         // --- Loop ---
