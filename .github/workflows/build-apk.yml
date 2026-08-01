@@ -1,0 +1,37 @@
+name: Build APK
+
+# Jalan otomatis tiap kali push ke branch main/master,
+# dan juga bisa dipicu manual lewat tab "Actions" -> "Run workflow"
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout kode
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Beri izin eksekusi ke gradlew
+        run: chmod +x ./gradlew
+
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Upload APK sebagai artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OtterAudioLab-debug-apk
+          path: app/build/outputs/apk/debug/*.apk

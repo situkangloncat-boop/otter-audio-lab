@@ -1,0 +1,7 @@
+<resources>
+    <style name="Theme.OtterAudioLab" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">#2E7D32</item>
+        <item name="colorPrimaryDark">#1B5E20</item>
+        <item name="colorAccent">#66BB6A</item>
+    </style>
+</resources>
