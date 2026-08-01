@@ -44,5 +44,5 @@ dependencies {
     // Pakai fork komunitas yang masih aktif dirilis, API package-nya tetap sama:
     // com.arthenica.ffmpegkit.* -- jadi kode di MainActivity.kt tidak perlu diubah.
     // Cek versi terbaru di: https://mvnrepository.com/artifact/io.github.jamaismagic.ffmpeg/ffmpeg-kit-lts-full-16kb
-    implementation("io.github.jamaismagic.ffmpeg:ffmpeg-kit-lts-full-16kb:6.1.7")
+    implementation("io.github.jamaismagic.ffmpeg:ffmpeg-kit-lts-16kb:6.1.7")
 }
