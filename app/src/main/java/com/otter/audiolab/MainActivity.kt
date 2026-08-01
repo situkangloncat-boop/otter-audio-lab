@@ -378,7 +378,12 @@ class MainActivity : AppCompatActivity() {
                     btnPlay.isEnabled = true
                     btnSave.isEnabled = true
                 } else {
-                    txtStatus.text = "Gagal memproses (kode: ${session.returnCode}). Cek kombinasi efek."
+                    val logDetail = try {
+                        session.failStackTrace ?: session.allLogsAsString.takeLast(800)
+                    } catch (e: Exception) {
+                        "Tidak ada detail log."
+                    }
+                    txtStatus.text = "Gagal (kode: ${session.returnCode}).\nPerintah: $command\n\nLog:\n$logDetail"
                 }
             }
         }
